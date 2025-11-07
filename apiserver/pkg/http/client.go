@@ -6,24 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strconv"
-	"time"
 
 	rpcStatus "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
 
+	apiserversdkutil "github.com/ray-project/kuberay/apiserversdk/util"
 	api "github.com/ray-project/kuberay/proto/go_client"
 )
-
-type RetryConfig struct {
-	MaxRetry       int
-	BackoffFactor  float64
-	InitBackoff    time.Duration
-	MaxBackoff     time.Duration
-	OverallTimeout time.Duration
-}
 
 type KuberayAPIServerClient struct {
 	httpClient  *http.Client
@@ -34,9 +25,9 @@ type KuberayAPIServerClient struct {
 	// See https://github.com/ray-project/kuberay/pull/3334/files#r2041183495 for details.
 	//
 	// Store http request handling function for unit test purpose.
-	executeHttpRequest func(httpRequest *http.Request, URL string) ([]byte, *rpcStatus.Status, error)
+	ExecuteHttpRequest func(httpRequest *http.Request, URL string) ([]byte, *rpcStatus.Status, error)
 	baseURL            string
-	retryCfg           RetryConfig
+	retryCfg           apiserversdkutil.RetryConfig
 }
 
 type KuberayAPIServerClientError struct {
@@ -57,7 +48,7 @@ func IsNotFoundError(err error) bool {
 	return false
 }
 
-func NewKuberayAPIServerClient(baseURL string, httpClient *http.Client, retryCfg RetryConfig) *KuberayAPIServerClient {
+func NewKuberayAPIServerClient(baseURL string, httpClient *http.Client, retryCfg apiserversdkutil.RetryConfig) *KuberayAPIServerClient {
 	client := &KuberayAPIServerClient{
 		httpClient: httpClient,
 		baseURL:    baseURL,
@@ -77,13 +68,13 @@ func NewKuberayAPIServerClient(baseURL string, httpClient *http.Client, retryCfg
 		},
 		retryCfg: retryCfg,
 	}
-	client.executeHttpRequest = client.executeRequest
+	client.ExecuteHttpRequest = client.executeRequest
 	return client
 }
 
 // Setter function for setting executeHttpRequest method
 func (krc *KuberayAPIServerClient) SetExecuteHttpRequest(fn func(httpRequest *http.Request, URL string) ([]byte, *rpcStatus.Status, error)) {
-	krc.executeHttpRequest = fn
+	krc.ExecuteHttpRequest = fn
 }
 
 // CreateComputeTemplate creates a new compute template.
@@ -103,7 +94,7 @@ func (krc *KuberayAPIServerClient) CreateComputeTemplate(request *api.CreateComp
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, createURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, createURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -131,7 +122,7 @@ func (krc *KuberayAPIServerClient) GetComputeTemplate(request *api.GetComputeTem
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -152,7 +143,7 @@ func (krc *KuberayAPIServerClient) GetAllComputeTemplates() (*api.ListAllCompute
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -173,7 +164,7 @@ func (krc *KuberayAPIServerClient) GetAllComputeTemplatesInNamespace(request *ap
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -201,7 +192,7 @@ func (krc *KuberayAPIServerClient) CreateCluster(request *api.CreateClusterReque
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, createURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, createURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -228,7 +219,7 @@ func (krc *KuberayAPIServerClient) GetCluster(request *api.GetClusterRequest) (*
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -254,7 +245,7 @@ func (krc *KuberayAPIServerClient) ListClusters(request *api.ListClustersRequest
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -280,7 +271,7 @@ func (krc *KuberayAPIServerClient) ListAllClusters(request *api.ListAllClustersR
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -307,7 +298,7 @@ func (krc *KuberayAPIServerClient) CreateRayJob(request *api.CreateRayJobRequest
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, createURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, createURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -328,7 +319,7 @@ func (krc *KuberayAPIServerClient) GetRayJob(request *api.GetRayJobRequest) (*ap
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -354,7 +345,7 @@ func (krc *KuberayAPIServerClient) ListRayJobs(request *api.ListRayJobsRequest) 
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -379,7 +370,7 @@ func (krc *KuberayAPIServerClient) ListAllRayJobs(request *api.ListAllRayJobsReq
 	httpRequest.URL.RawQuery = q.Encode()
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -412,7 +403,7 @@ func (krc *KuberayAPIServerClient) CreateRayService(request *api.CreateRayServic
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, createURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, createURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -439,7 +430,7 @@ func (krc *KuberayAPIServerClient) UpdateRayService(request *api.UpdateRayServic
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, updateURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, updateURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -460,7 +451,7 @@ func (krc *KuberayAPIServerClient) GetRayService(request *api.GetRayServiceReque
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -485,7 +476,7 @@ func (krc *KuberayAPIServerClient) ListRayServices(request *api.ListRayServicesR
 	httpRequest.URL.RawQuery = q.Encode()
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -511,7 +502,7 @@ func (krc *KuberayAPIServerClient) ListAllRayServices(request *api.ListAllRaySer
 	httpRequest.URL.RawQuery = q.Encode()
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -544,7 +535,7 @@ func (krc *KuberayAPIServerClient) SubmitRayJob(request *api.SubmitRayJobRequest
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, createURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, createURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -565,7 +556,7 @@ func (krc *KuberayAPIServerClient) GetRayJobDetails(request *api.GetJobDetailsRe
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -586,7 +577,7 @@ func (krc *KuberayAPIServerClient) GetRayJobLog(request *api.GetJobLogRequest) (
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -607,7 +598,7 @@ func (krc *KuberayAPIServerClient) ListRayJobsCluster(request *api.ListJobDetail
 
 	httpRequest.Header.Add("Accept", "application/json")
 
-	bodyBytes, status, err := krc.executeHttpRequest(httpRequest, getURL)
+	bodyBytes, status, err := krc.ExecuteHttpRequest(httpRequest, getURL)
 	if err != nil {
 		return nil, status, err
 	}
@@ -630,7 +621,7 @@ func (krc *KuberayAPIServerClient) StopRayJob(request *api.StopRayJobSubmissionR
 	httpRequest.Header.Add("Accept", "application/json")
 	httpRequest.Header.Add("Content-Type", "application/json")
 
-	_, status, err := krc.executeHttpRequest(httpRequest, createURL)
+	_, status, err := krc.ExecuteHttpRequest(httpRequest, createURL)
 	if err != nil {
 		return status, err
 	}
@@ -649,17 +640,8 @@ func (krc *KuberayAPIServerClient) doDelete(deleteURL string) (*rpcStatus.Status
 		return nil, fmt.Errorf("failed to create http request for url '%s': %w", deleteURL, err)
 	}
 	httpRequest.Header.Add("Accept", "application/json")
-	_, status, err := krc.executeHttpRequest(httpRequest, deleteURL)
+	_, status, err := krc.ExecuteHttpRequest(httpRequest, deleteURL)
 	return status, err
-}
-
-var retryableHTTPStatusCodes = map[int]struct{}{
-	http.StatusRequestTimeout:      {}, // 408
-	http.StatusTooManyRequests:     {}, // 429
-	http.StatusInternalServerError: {}, // 500
-	http.StatusBadGateway:          {}, // 502
-	http.StatusServiceUnavailable:  {}, // 503
-	http.StatusGatewayTimeout:      {}, // 504
 }
 
 func (krc *KuberayAPIServerClient) executeRequest(httpRequest *http.Request, URL string) ([]byte, *rpcStatus.Status, error) {
@@ -713,7 +695,7 @@ func (krc *KuberayAPIServerClient) executeRequest(httpRequest *http.Request, URL
 			break
 		}
 
-		if statusCode == http.StatusOK {
+		if apiserversdkutil.IsSuccessfulStatusCode(statusCode) {
 			return bodyBytes, nil, nil
 		}
 
@@ -730,22 +712,22 @@ func (krc *KuberayAPIServerClient) executeRequest(httpRequest *http.Request, URL
 			HTTPStatusCode: statusCode,
 		}
 
-		// Retry only for HTTP status in the list
-		if _, retryable := retryableHTTPStatusCodes[statusCode]; !retryable {
+		if !apiserversdkutil.IsRetryableHTTPStatusCodes(statusCode) {
 			break
 		}
 
 		// Backoff before retry
-		sleep := krc.retryCfg.InitBackoff * time.Duration(math.Pow(krc.retryCfg.BackoffFactor, float64(attempt)))
-		if sleep > krc.retryCfg.MaxBackoff {
-			sleep = krc.retryCfg.MaxBackoff
+		sleep := apiserversdkutil.GetRetryBackoff(attempt,
+			krc.retryCfg.InitBackoff,
+			krc.retryCfg.BackoffFactor,
+			krc.retryCfg.MaxBackoff)
+
+		if ok := apiserversdkutil.CheckContextDeadline(ctx, sleep); !ok {
+			return nil, lastStatus, fmt.Errorf("retry timeout exceeded context deadline")
 		}
 
-		select {
-		case <-time.After(sleep):
-			// continue to the next retry after backoff
-		case <-ctx.Done():
-			return nil, lastStatus, fmt.Errorf("overall timeout reached: %w", ctx.Err())
+		if err = apiserversdkutil.Sleep(ctx, sleep); err != nil {
+			return nil, lastStatus, fmt.Errorf("retry canceled during backoff: %w", err)
 		}
 
 	}

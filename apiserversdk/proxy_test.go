@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang/mock/gomock"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
@@ -23,8 +24,10 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
+	"github.com/ray-project/kuberay/apiserver/pkg/manager"
+	apiserverutil "github.com/ray-project/kuberay/apiserversdk/util"
 	rayv1 "github.com/ray-project/kuberay/ray-operator/apis/ray/v1"
-	"github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
+	rayutil "github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
 	rayclient "github.com/ray-project/kuberay/ray-operator/pkg/client/clientset/versioned/typed/ray/v1"
 )
 
@@ -55,6 +58,10 @@ var _ = BeforeSuite(func(_ SpecContext) {
 	Expect(err).ToNot(HaveOccurred())
 	Expect(cfg).ToNot(BeNil())
 
+	ctrl := gomock.Controller{}
+	// mock client manager
+	mockClientManager := manager.NewMockClientManagerInterface(&ctrl)
+
 	mux, err := NewMux(MuxConfig{
 		KubernetesConfig: cfg,
 		Middleware: func(handler http.Handler) http.Handler {
@@ -63,7 +70,7 @@ var _ = BeforeSuite(func(_ SpecContext) {
 				handler.ServeHTTP(w, r)
 			})
 		},
-	})
+	}, mockClientManager)
 	Expect(err).ToNot(HaveOccurred())
 	Expect(mux).ToNot(BeNil())
 
@@ -319,7 +326,7 @@ var _ = Describe("kuberay service", Ordered, func() {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: svcName,
 					Labels: map[string]string{
-						utils.KubernetesApplicationNameLabelKey: utils.ApplicationName,
+						rayutil.KubernetesApplicationNameLabelKey: rayutil.ApplicationName,
 					},
 				},
 				Spec: corev1.ServiceSpec{
@@ -454,7 +461,7 @@ var _ = Describe("retryRoundTripper", func() {
 		resp, err := retrier.RoundTrip(req)
 		Expect(err).ToNot(HaveOccurred())
 		Expect(resp.StatusCode).To(Equal(http.StatusInternalServerError))
-		Expect(attempts).To(Equal(int32(HTTPClientDefaultMaxRetry + 1)))
+		Expect(attempts).To(Equal(int32(apiserverutil.HTTPClientDefaultMaxRetry + 1)))
 	})
 
 	It("Retries on request with body", func() {

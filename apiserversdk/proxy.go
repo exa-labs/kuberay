@@ -2,21 +2,22 @@ package apiserversdk
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"strings"
-	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/net"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 
-	"github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
+	"github.com/ray-project/kuberay/apiserver/pkg/manager"
+	apiserversdkutil "github.com/ray-project/kuberay/apiserversdk/util"
+	rayutil "github.com/ray-project/kuberay/ray-operator/controllers/ray/utils"
 )
 
 type MuxConfig struct {
@@ -24,7 +25,7 @@ type MuxConfig struct {
 	Middleware       func(http.Handler) http.Handler
 }
 
-func NewMux(config MuxConfig) (*http.ServeMux, error) {
+func NewMux(config MuxConfig, clientManager manager.ClientManagerInterface) (*http.ServeMux, error) {
 	u, err := url.Parse(config.KubernetesConfig.Host) // parse the K8s API server URL from the KubernetesConfig.
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse url %s from config: %w", config.KubernetesConfig.Host, err)
@@ -46,6 +47,16 @@ func NewMux(config MuxConfig) (*http.ServeMux, error) {
 	mux.Handle("GET /api/v1/namespaces/{namespace}/events", withFieldSelector(handler, "involvedObject.apiVersion=ray.io/v1")) // allow querying KubeRay CR events.
 
 	k8sClient := kubernetes.NewForConfigOrDie(config.KubernetesConfig)
+
+	// Compute Template middleware
+	ctMiddleware := apiserversdkutil.NewComputeTemplateMiddleware(clientManager)
+	mux.Handle("POST /apis/ray.io/v1/namespaces/{namespace}/rayclusters", ctMiddleware(handler))
+	mux.Handle("PUT /apis/ray.io/v1/namespaces/{namespace}/rayclusters/{name}", ctMiddleware(handler))
+	mux.Handle("POST /apis/ray.io/v1/namespaces/{namespace}/rayjobs", ctMiddleware(handler))
+	mux.Handle("PUT /apis/ray.io/v1/namespaces/{namespace}/rayjobs/{name}", ctMiddleware(handler))
+	mux.Handle("POST /apis/ray.io/v1/namespaces/{namespace}/rayservices", ctMiddleware(handler))
+	mux.Handle("PUT /apis/ray.io/v1/namespaces/{namespace}/rayservices/{name}", ctMiddleware(handler))
+
 	requireKubeRayServiceHandler := requireKubeRayService(handler, k8sClient)
 	// Allow accessing KubeRay dashboards and job submissions.
 	// Note: We also register "/proxy" to avoid the trailing slash redirection
@@ -78,7 +89,7 @@ func requireKubeRayService(handler http.Handler, k8sClient *kubernetes.Clientset
 		}
 		services, err := k8sClient.CoreV1().Services(namespace).List(r.Context(), metav1.ListOptions{
 			FieldSelector: "metadata.name=" + serviceName,
-			LabelSelector: "app.kubernetes.io/name=" + utils.ApplicationName,
+			LabelSelector: "app.kubernetes.io/name=" + rayutil.ApplicationName,
 		})
 		if err != nil {
 			http.Error(w, "failed to list kuberay services", http.StatusInternalServerError)
@@ -95,18 +106,32 @@ func requireKubeRayService(handler http.Handler, k8sClient *kubernetes.Clientset
 // retryRoundTripper is a custom implementation of http.RoundTripper that retries HTTP requests.
 // It verifies retryable HTTP status codes and retries using exponential backoff.
 type retryRoundTripper struct {
-	base http.RoundTripper
-
-	// Num of retries after the initial attempt
-	maxRetries int
+	base     http.RoundTripper
+	retryCfg apiserversdkutil.RetryConfig
 }
 
 func newRetryRoundTripper(base http.RoundTripper) http.RoundTripper {
-	return &retryRoundTripper{base: base, maxRetries: HTTPClientDefaultMaxRetry}
+	retryCfg := apiserversdkutil.RetryConfig{
+		MaxRetry:       apiserversdkutil.HTTPClientDefaultMaxRetry,
+		BackoffFactor:  apiserversdkutil.HTTPClientDefaultBackoffFactor,
+		InitBackoff:    apiserversdkutil.HTTPClientDefaultInitBackoff,
+		MaxBackoff:     apiserversdkutil.HTTPClientDefaultMaxBackoff,
+		OverallTimeout: apiserversdkutil.HTTPClientDefaultOverallTimeout,
+	}
+
+	return &retryRoundTripper{
+		base:     base,
+		retryCfg: retryCfg,
+	}
 }
 
 func (rrt *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
+
+	ctx, cancel := context.WithTimeout(ctx, rrt.retryCfg.OverallTimeout)
+	defer cancel()
+
+	req = req.WithContext(ctx)
 
 	var bodyBytes []byte
 	var resp *http.Response
@@ -124,8 +149,8 @@ func (rrt *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 		}
 	}
 
-	for attempt := 0; attempt <= rrt.maxRetries; attempt++ {
-		/* Try up to (rrt.maxRetries + 1) times: initial attempt + retries */
+	for attempt := 0; attempt <= rrt.retryCfg.MaxRetry; attempt++ {
+		/* Try up to (rrt.retryCfg.MaxRetry + 1) times: initial attempt + retries */
 
 		if bodyBytes != nil {
 			req.Body = io.NopCloser(bytes.NewReader(bodyBytes))
@@ -136,15 +161,26 @@ func (rrt *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 			return resp, fmt.Errorf("request to %s %s failed with error: %w", req.Method, req.URL.String(), err)
 		}
 
-		if isSuccessfulStatusCode(resp.StatusCode) {
+		if apiserversdkutil.IsSuccessfulStatusCode(resp.StatusCode) {
+			if resp.Body != nil {
+				body, err := io.ReadAll(resp.Body)
+				if err != nil {
+					return nil, fmt.Errorf("failed to read response body: %w", err)
+				}
+				err = resp.Body.Close()
+				if err != nil {
+					return nil, fmt.Errorf("failed to close response body: %w", err)
+				}
+				resp.Body = io.NopCloser(bytes.NewReader(body))
+			}
 			return resp, nil
 		}
 
-		if !isRetryableHTTPStatusCodes(resp.StatusCode) {
+		if !apiserversdkutil.IsRetryableHTTPStatusCodes(resp.StatusCode) {
 			return resp, nil
 		}
 
-		if attempt == rrt.maxRetries {
+		if attempt == rrt.retryCfg.MaxRetry {
 			return resp, nil
 		}
 
@@ -158,45 +194,15 @@ func (rrt *retryRoundTripper) RoundTrip(req *http.Request) (*http.Response, erro
 			}
 		}
 
-		// TODO: move to HTTP util function in independent util file
-		sleepDuration := HTTPClientDefaultInitBackoff * time.Duration(math.Pow(HTTPClientDefaultBackoffBase, float64(attempt)))
-		if sleepDuration > HTTPClientDefaultMaxBackoff {
-			sleepDuration = HTTPClientDefaultMaxBackoff
+		sleepDuration := apiserversdkutil.GetRetryBackoff(attempt, rrt.retryCfg.InitBackoff, rrt.retryCfg.BackoffFactor, rrt.retryCfg.MaxBackoff)
+
+		if ok := apiserversdkutil.CheckContextDeadline(ctx, sleepDuration); !ok {
+			return resp, fmt.Errorf("retry timeout exceeded context deadline")
 		}
 
-		// TODO: merge common utils for apiserver v1 and v2
-		if deadline, ok := ctx.Deadline(); ok {
-			remaining := time.Until(deadline)
-			if sleepDuration > remaining {
-				return resp, fmt.Errorf("retry timeout exceeded context deadline")
-			}
-		}
-
-		select {
-		case <-time.After(sleepDuration):
-		case <-ctx.Done():
-			return resp, fmt.Errorf("retry canceled during backoff: %w", ctx.Err())
+		if err = apiserversdkutil.Sleep(ctx, sleepDuration); err != nil {
+			return resp, fmt.Errorf("retry canceled during backoff: %w", err)
 		}
 	}
 	return resp, err
-}
-
-// TODO: move HTTP util function into independent util file / folder
-func isSuccessfulStatusCode(statusCode int) bool {
-	return 200 <= statusCode && statusCode < 300
-}
-
-// TODO: merge common utils for apiserver v1 and v2
-func isRetryableHTTPStatusCodes(statusCode int) bool {
-	switch statusCode {
-	case http.StatusRequestTimeout, // 408
-		http.StatusTooManyRequests,     // 429
-		http.StatusInternalServerError, // 500
-		http.StatusBadGateway,          // 502
-		http.StatusServiceUnavailable,  // 503
-		http.StatusGatewayTimeout:      // 504
-		return true
-	default:
-		return false
-	}
 }

@@ -662,7 +662,15 @@ spec:
                                 type: object
                             type: object
                         type: object
+                      labels:
+                        additionalProperties:
+                          type: string
+                        type: object
                       rayStartParams:
+                        additionalProperties:
+                          type: string
+                        type: object
+                      resources:
                         additionalProperties:
                           type: string
                         type: object
@@ -4504,6 +4512,10 @@ spec:
                         idleTimeoutSeconds:
                           format: int32
                           type: integer
+                        labels:
+                          additionalProperties:
+                            type: string
+                          type: object
                         maxReplicas:
                           default: 2147483647
                           format: int32
@@ -4524,6 +4536,10 @@ spec:
                           default: 0
                           format: int32
                           type: integer
+                        resources:
+                          additionalProperties:
+                            type: string
+                          type: object
                         scaleStrategy:
                           properties:
                             workersToDelete:
@@ -8558,6 +8574,25 @@ spec:
                 type: integer
               upgradeStrategy:
                 properties:
+                  clusterUpgradeOptions:
+                    properties:
+                      gatewayClassName:
+                        type: string
+                      intervalSeconds:
+                        format: int32
+                        type: integer
+                      maxSurgePercent:
+                        default: 100
+                        format: int32
+                        type: integer
+                      stepSizePercent:
+                        format: int32
+                        type: integer
+                    required:
+                    - gatewayClassName
+                    - intervalSeconds
+                    - stepSizePercent
+                    type: object
                   type:
                     type: string
                 type: object
@@ -8586,6 +8621,9 @@ spec:
                           type: string
                       type: object
                     type: object
+                  lastTrafficMigratedTime:
+                    format: date-time
+                    type: string
                   rayClusterName:
                     type: string
                   rayClusterStatus:
@@ -8700,6 +8738,12 @@ spec:
                           type: string
                         type: object
                     type: object
+                  targetCapacity:
+                    format: int32
+                    type: integer
+                  trafficRoutedPercent:
+                    format: int32
+                    type: integer
                 type: object
               conditions:
                 items:
@@ -8769,6 +8813,9 @@ spec:
                           type: string
                       type: object
                     type: object
+                  lastTrafficMigratedTime:
+                    format: date-time
+                    type: string
                   rayClusterName:
                     type: string
                   rayClusterStatus:
@@ -8883,6 +8930,12 @@ spec:
                           type: string
                         type: object
                     type: object
+                  targetCapacity:
+                    format: int32
+                    type: integer
+                  trafficRoutedPercent:
+                    format: int32
+                    type: integer
                 type: object
               serviceStatus:
                 type: string

@@ -3134,6 +3134,9 @@ func TestReconcile_NumOfHosts(t *testing.T) {
 
 func TestSumGPUs(t *testing.T) {
 	nvidiaGPUResourceName := corev1.ResourceName("nvidia.com/gpu")
+	nvidiaMIG1g10gbResourceName := corev1.ResourceName("nvidia.com/mig-1g.10gb")
+	nvidiaMIG2g20gbResourceName := corev1.ResourceName("nvidia.com/mig-2g.20gb")
+	nvidiaMIG3g40gbResourceName := corev1.ResourceName("nvidia.com/mig-3g.40gb")
 	googleTPUResourceName := corev1.ResourceName("google.com/tpu")
 
 	tests := []struct {
@@ -3162,10 +3165,23 @@ func TestSumGPUs(t *testing.T) {
 			input: map[corev1.ResourceName]resource.Quantity{
 				corev1.ResourceCPU:                 resource.MustParse("1"),
 				nvidiaGPUResourceName:              resource.MustParse("3"),
+				nvidiaMIG1g10gbResourceName:        resource.MustParse("2"),
 				corev1.ResourceName("foo.bar/gpu"): resource.MustParse("2"),
 				googleTPUResourceName:              resource.MustParse("1"),
 			},
-			expected: resource.MustParse("5"),
+			expected: resource.MustParse("7"),
+		},
+		{
+			name: "multiple MIG types specified",
+			input: map[corev1.ResourceName]resource.Quantity{
+				corev1.ResourceCPU:          resource.MustParse("1"),
+				nvidiaGPUResourceName:       resource.MustParse("1"),
+				nvidiaMIG1g10gbResourceName: resource.MustParse("2"),
+				nvidiaMIG2g20gbResourceName: resource.MustParse("3"),
+				nvidiaMIG3g40gbResourceName: resource.MustParse("4"),
+				googleTPUResourceName:       resource.MustParse("1"),
+			},
+			expected: resource.MustParse("10"),
 		},
 	}
 
@@ -3421,6 +3437,7 @@ func Test_ReconcileManagedBy(t *testing.T) {
 func TestEmitRayClusterProvisionedDuration(t *testing.T) {
 	clusterName := "test-ray-cluster"
 	clusterNamespace := "default"
+	clusterUID := types.UID("test-cluster-uid")
 
 	// Creation time 5 minutes ago to simulate cluster runtime
 	creationTime := time.Now().Add(-5 * time.Minute)
@@ -3499,6 +3516,7 @@ func TestEmitRayClusterProvisionedDuration(t *testing.T) {
 					ObserveRayClusterProvisionedDuration(
 						clusterName,
 						clusterNamespace,
+						clusterUID,
 						mock.MatchedBy(func(d float64) bool {
 							// Allow some wiggle room in timing
 							return math.Abs(d-tc.expectedDuration) < 1.0
@@ -3510,6 +3528,7 @@ func TestEmitRayClusterProvisionedDuration(t *testing.T) {
 				mockCollector,
 				clusterName,
 				clusterNamespace,
+				clusterUID,
 				tc.oldStatus,
 				tc.newStatus,
 				creationTime,

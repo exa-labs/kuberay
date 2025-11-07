@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	rpcStatus "google.golang.org/genproto/googleapis/rpc/status"
 
-	"github.com/ray-project/kuberay/apiserver/pkg/util"
+	"github.com/ray-project/kuberay/apiserversdk/util"
 	api "github.com/ray-project/kuberay/proto/go_client"
 )
 
@@ -53,16 +53,16 @@ func (m *mockTransport) RoundTrip(_ *http.Request) (*http.Response, error) {
 }
 
 func TestUnmarshalHttpResponseOK(t *testing.T) {
-	retryCfg := RetryConfig{
+	retryCfg := util.RetryConfig{
 		MaxRetry:       util.HTTPClientDefaultMaxRetry,
-		BackoffFactor:  util.HTTPClientDefaultBackoffBase,
+		BackoffFactor:  util.HTTPClientDefaultBackoffFactor,
 		InitBackoff:    util.HTTPClientDefaultInitBackoff,
 		MaxBackoff:     util.HTTPClientDefaultMaxBackoff,
 		OverallTimeout: util.HTTPClientDefaultOverallTimeout,
 	}
 
 	client := NewKuberayAPIServerClient("baseurl", nil /*httpClient*/, retryCfg)
-	client.executeHttpRequest = func(_ *http.Request, _ string) ([]byte, *rpcStatus.Status, error) {
+	client.ExecuteHttpRequest = func(_ *http.Request, _ string) ([]byte, *rpcStatus.Status, error) {
 		resp := &api.ListClustersResponse{
 			Clusters: []*api.Cluster{
 				{
@@ -89,16 +89,16 @@ func TestUnmarshalHttpResponseOK(t *testing.T) {
 
 // Unmarshal response fails and check error returned.
 func TestUnmarshalHttpResponseFails(t *testing.T) {
-	retryCfg := RetryConfig{
+	retryCfg := util.RetryConfig{
 		MaxRetry:       util.HTTPClientDefaultMaxRetry,
-		BackoffFactor:  util.HTTPClientDefaultBackoffBase,
+		BackoffFactor:  util.HTTPClientDefaultBackoffFactor,
 		InitBackoff:    util.HTTPClientDefaultInitBackoff,
 		MaxBackoff:     util.HTTPClientDefaultMaxBackoff,
 		OverallTimeout: util.HTTPClientDefaultOverallTimeout,
 	}
 
 	client := NewKuberayAPIServerClient("baseurl", nil /*httpClient*/, retryCfg)
-	client.executeHttpRequest = func(_ *http.Request, _ string) ([]byte, *rpcStatus.Status, error) {
+	client.ExecuteHttpRequest = func(_ *http.Request, _ string) ([]byte, *rpcStatus.Status, error) {
 		// Intentionall returning a bad response.
 		return []byte("helloworld"), nil, nil
 	}
@@ -207,9 +207,9 @@ func TestAPIServerClientRetry(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			mockClient := &http.Client{Transport: tt.transport}
 
-			retryCfg := RetryConfig{
+			retryCfg := util.RetryConfig{
 				MaxRetry:       tt.maxRetry,
-				BackoffFactor:  util.HTTPClientDefaultBackoffBase,
+				BackoffFactor:  util.HTTPClientDefaultBackoffFactor,
 				InitBackoff:    util.HTTPClientDefaultInitBackoff,
 				MaxBackoff:     util.HTTPClientDefaultMaxBackoff,
 				OverallTimeout: util.HTTPClientDefaultOverallTimeout,
@@ -261,9 +261,9 @@ func TestAPIServerClientBackoff(t *testing.T) {
 
 	mockClient := &http.Client{Transport: mockTransport}
 
-	retryCfg := RetryConfig{
+	retryCfg := util.RetryConfig{
 		MaxRetry:      util.HTTPClientDefaultMaxRetry,
-		BackoffFactor: util.HTTPClientDefaultBackoffBase,
+		BackoffFactor: util.HTTPClientDefaultBackoffFactor,
 		// Set short backoff time
 		InitBackoff:    1 * time.Millisecond,
 		MaxBackoff:     50 * time.Millisecond,
@@ -303,9 +303,9 @@ func TestAPIServerClientOverallTimeout(t *testing.T) {
 
 	mockClient := &http.Client{Transport: mockTransport}
 
-	retryCfg := RetryConfig{
+	retryCfg := util.RetryConfig{
 		MaxRetry:      util.HTTPClientDefaultMaxRetry,
-		BackoffFactor: util.HTTPClientDefaultBackoffBase,
+		BackoffFactor: util.HTTPClientDefaultBackoffFactor,
 		InitBackoff:   1 * time.Millisecond,
 		MaxBackoff:    50 * time.Millisecond,
 		// Set short overall timeout so that the timeout error will be raised
@@ -322,5 +322,5 @@ func TestAPIServerClientOverallTimeout(t *testing.T) {
 
 	// Expect a timeout error
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "timeout")
+	require.Contains(t, err.Error(), "retry timeout exceeded context deadline")
 }
