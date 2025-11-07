@@ -585,10 +585,20 @@ func (r *RayClusterReconciler) reconcilePodMonitors(ctx context.Context, instanc
 				// PodMonitor doesn't exist, create it
 				logger.Info("Creating PodMonitor", "name", podMonitor.Name, "namespace", podMonitor.Namespace)
 				if err := r.Create(ctx, podMonitor); err != nil {
+					// Check if the error is due to PodMonitor CRD not being registered
+					if meta.IsNoMatchError(err) || k8sruntime.IsNotRegisteredError(err) {
+						logger.Info("PodMonitor CRD not installed, skipping PodMonitor creation", "name", podMonitor.Name)
+						return nil
+					}
 					logger.Error(err, "Failed to create PodMonitor", "name", podMonitor.Name)
 					return err
 				}
 			} else {
+				// Check if the error is due to PodMonitor CRD not being registered
+				if meta.IsNoMatchError(err) || k8sruntime.IsNotRegisteredError(err) {
+					logger.Info("PodMonitor CRD not installed, skipping PodMonitor reconciliation")
+					return nil
+				}
 				logger.Error(err, "Failed to get PodMonitor", "name", podMonitor.Name)
 				return err
 			}
