@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-logr/logr"
 	routev1 "github.com/openshift/api/route/v1"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -117,6 +118,7 @@ type RayClusterReconcilerOptions struct {
 // +kubebuilder:rbac:groups=core,resources=serviceaccounts,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=get;list;watch;create;delete;update
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=get;list;watch;create;delete
+// +kubebuilder:rbac:groups=monitoring.coreos.com,resources=podmonitors,verbs=get;list;watch;create;update;patch;delete
 
 // [WARNING]: There MUST be a newline after kubebuilder markers.
 
@@ -309,6 +311,7 @@ func (r *RayClusterReconciler) rayClusterReconcile(ctx context.Context, instance
 		r.reconcileHeadService,
 		r.reconcileHeadlessService,
 		r.reconcileServeService,
+		r.reconcilePodMonitors,
 		r.reconcilePods,
 	}
 
@@ -548,6 +551,49 @@ func (r *RayClusterReconciler) reconcileHeadlessService(ctx context.Context, ins
 
 		if err := r.createService(ctx, headlessSvc, instance); err != nil {
 			return err
+		}
+	}
+
+	return nil
+}
+
+// reconcilePodMonitors creates or updates PodMonitor resources for the Ray cluster.
+func (r *RayClusterReconciler) reconcilePodMonitors(ctx context.Context, instance *rayv1.RayCluster) error {
+	logger := ctrl.LoggerFrom(ctx)
+	logger.Info("Reconciling PodMonitors for RayCluster", "cluster", instance.Name)
+
+	// Build PodMonitor resources for the cluster
+	podMonitors, err := common.BuildPodMonitorForRayCluster(ctx, *instance)
+	if err != nil {
+		logger.Error(err, "Failed to build PodMonitor resources")
+		return err
+	}
+
+	// Create or update each PodMonitor
+	for _, podMonitor := range podMonitors {
+		// Set the RayCluster as the owner of the PodMonitor
+		if err := ctrl.SetControllerReference(instance, podMonitor, r.Scheme); err != nil {
+			logger.Error(err, "Failed to set controller reference for PodMonitor", "podMonitor", podMonitor.Name)
+			return err
+		}
+
+		// Check if the PodMonitor already exists
+		existingPodMonitor := &monitoringv1.PodMonitor{}
+		err := r.Get(ctx, client.ObjectKey{Name: podMonitor.Name, Namespace: podMonitor.Namespace}, existingPodMonitor)
+		if err != nil {
+			if errors.IsNotFound(err) {
+				// PodMonitor doesn't exist, create it
+				logger.Info("Creating PodMonitor", "name", podMonitor.Name, "namespace", podMonitor.Namespace)
+				if err := r.Create(ctx, podMonitor); err != nil {
+					logger.Error(err, "Failed to create PodMonitor", "name", podMonitor.Name)
+					return err
+				}
+			} else {
+				logger.Error(err, "Failed to get PodMonitor", "name", podMonitor.Name)
+				return err
+			}
+		} else {
+			logger.Info("PodMonitor already exists", "name", podMonitor.Name, "namespace", podMonitor.Namespace)
 		}
 	}
 
