@@ -32,7 +32,15 @@ func BuildIngressForHeadService(ctx context.Context, cluster rayv1.RayCluster) (
 	excludeSet := map[string]struct{}{
 		IngressClassAnnotationKey: {},
 	}
-	annotation := map[string]string{}
+	annotation := map[string]string{
+		"nginx.ingress.kubernetes.io/rewrite-target":        "/$1",
+		"nginx.ingress.kubernetes.io/use-regex":             "true",
+		"nginx.ingress.kubernetes.io/auth-url":              "http://oauth2-proxy.auth-proxy.svc.cluster.local:4180/oauth2/auth",
+		"nginx.ingress.kubernetes.io/auth-signin":           "https://auth.hephaestus.exa.ai/oauth2/start?rd=$scheme://$host$request_uri",
+		"nginx.ingress.kubernetes.io/auth-response-headers": "Authorization,X-Auth-Request-User,X-Auth-Request-Email",
+		"nginx.ingress.kubernetes.io/ssl-redirect":          "true",
+		"nginx.ingress.kubernetes.io/force-ssl-redirect":    "true",
+	}
 	for key, value := range cluster.Annotations {
 		if _, ok := excludeSet[key]; !ok {
 			annotation[key] = value
@@ -73,8 +81,15 @@ func BuildIngressForHeadService(ctx context.Context, cluster rayv1.RayCluster) (
 			Annotations: annotation,
 		},
 		Spec: networkingv1.IngressSpec{
+			TLS: []networkingv1.IngressTLS{
+				{
+					Hosts:      []string{"ray.hephaestus.exa.ai"},
+					SecretName: "ray-tls",
+				},
+			},
 			Rules: []networkingv1.IngressRule{
 				{
+					Host: "ray.hephaestus.exa.ai",
 					IngressRuleValue: networkingv1.IngressRuleValue{
 						HTTP: &networkingv1.HTTPIngressRuleValue{
 							Paths: paths,
@@ -87,7 +102,9 @@ func BuildIngressForHeadService(ctx context.Context, cluster rayv1.RayCluster) (
 
 	// Get ingress class name from rayCluster annotations. this is a required field to use ingress.
 	if ingressClassName, ok := cluster.Annotations[IngressClassAnnotationKey]; !ok {
-		log.Info("Ingress class annotation is not set for the cluster.", "clusterNamespace", cluster.Namespace, "clusterName", cluster.Name)
+		log.Info("Ingress class annotation is not set for the cluster, using default 'nginx'", "clusterNamespace", cluster.Namespace, "clusterName", cluster.Name)
+		defaultIngressClassName := "nginx"
+		ingress.Spec.IngressClassName = &defaultIngressClassName
 	} else {
 		// TODO: in AWS EKS, set up IngressClassName will cause an error due to conflict with annotation.
 		ingress.Spec.IngressClassName = &ingressClassName
