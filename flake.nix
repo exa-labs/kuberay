@@ -24,6 +24,7 @@
             go_1_24
             pre-commit
             kubernetes-helm
+            yarn
           ];
           shellHook = '''';
         };
