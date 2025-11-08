@@ -145,12 +145,14 @@ jobs:
       run: make test
       working-directory: ${{env.working-directory}}
 
-    - name: Log in to Quay.io
-      uses: docker/login-action@v2
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
       with:
-        registry: quay.io
-        username: ${{ secrets.QUAY_USERNAME }}
-        password: ${{ secrets.QUAY_ROBOT_TOKEN }}
+        role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
+        aws-region: us-west-2
+
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
 
     # Build operators inside the gh runner vm directly and then copy the go binaries to docker images using the Dockerfile.buildx
     - name: Build linux/amd64 Operator go binary
@@ -181,8 +183,8 @@ jobs:
       uses: docker/build-push-action@v5
       env:
         PUSH: true
-        REPO_ORG: kuberay
-        REPO_NAME: operator
+        ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
+        ECR_REPO: exa-hephaestus/kuberay-operator
       with:
         platforms: linux/amd64,linux/arm64
         context: ${{env.working-directory}}
@@ -190,8 +192,8 @@ jobs:
         push: ${{env.PUSH}}
         provenance: false
         tags: |
-          quay.io/${{env.REPO_ORG}}/${{env.REPO_NAME}}:${{ steps.vars.outputs.sha_short }}
-          quay.io/${{env.REPO_ORG}}/${{env.REPO_NAME}}:${{ env.tag }}
+          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
+          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
 
     - name: Create ray-operator tag
       uses: actions/github-script@v6
