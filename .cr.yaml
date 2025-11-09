@@ -1,0 +1,3 @@
+owner: exa-labs
+git-repo: kuberay
+charts-dir: helm-chart
