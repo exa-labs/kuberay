@@ -1,5 +1,0 @@
-owner: exa-labs
-repo: kuberay
-charts_dir: helm-chart
-pages_branch: gh-pages
-charts_repo_url: https://exa-labs.github.io/kuberay
