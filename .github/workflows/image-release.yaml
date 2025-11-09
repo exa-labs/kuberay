@@ -3,6 +3,10 @@ name: release-image-build
 on:
   workflow_dispatch:
 
+permissions:
+  id-token: write
+  contents: read
+
 jobs:
   release_apiserver_image:
     env:
@@ -10,94 +14,93 @@ jobs:
     name: Release APIServer Docker Image
     runs-on: ubuntu-22.04
     steps:
+      - name: Error if not a tag
+        uses: actions/github-script@v7
+        if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
+        with:
+          script: core.setFailed('This action can only be run on tags')
 
-    - name: Error if not a tag
-      uses: actions/github-script@v7
-      if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
-      with:
-        script: core.setFailed('This action can only be run on tags')
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: v1.24
 
-    - name: Set up Go
-      uses: actions/setup-go@v3
-      with:
-        go-version: v1.24
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+      - name: Extract tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
-    - name: Extract tag
-      id: tag
-      run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      - name: Install kubebuilder
+        run: |
+          wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
+          sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
 
-    - name: Install kubebuilder
-      run: |
-        wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
-        sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
+      - name: Get revision SHA
+        id: vars
+        run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
 
-    - name: Get revision SHA
-      id: vars
-      run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+      - name: Get dependencies
+        run: go mod download
+        working-directory: ${{env.working-directory}}
 
-    - name: Get dependencies
-      run: go mod download
-      working-directory: ${{env.working-directory}}
+      - name: Build
+        run: go build ./...
+        working-directory: ${{env.working-directory}}
 
-    - name: Build
-      run: go build ./...
-      working-directory: ${{env.working-directory}}
+      - name: Test
+        run: go test ./pkg/... ./cmd/... -race -parallel 4
+        working-directory: ${{env.working-directory}}
 
-    - name: Test
-      run: go test ./pkg/... ./cmd/... -race -parallel 4
-      working-directory: ${{env.working-directory}}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
+          aws-region: us-west-2
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
-        aws-region: us-west-2
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
+      # Build apiserver binaries inside the gh runner vm directly and then copy the go binaries to docker images using the Dockerfile.buildx
+      - name: Build linux/amd64 apiserver go binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -a -o kuberay-apiserver-$GOARCH cmd/main.go
+        working-directory: ${{env.working-directory}}
 
-    # Build apiserver binaries inside the gh runner vm directly and then copy the go binaries to docker images using the Dockerfile.buildx
-    - name: Build linux/amd64 apiserver go binary
-      env:
-        CGO_ENABLED: 0
-        GOOS: linux
-        GOARCH: amd64
-      run: |
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -a -o kuberay-apiserver-$GOARCH cmd/main.go
-      working-directory: ${{env.working-directory}}
+      - name: Build linux/arm64 apiserver binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -a -o kuberay-apiserver-$GOARCH cmd/main.go
+        working-directory: ${{env.working-directory}}
 
-    - name: Build linux/arm64 apiserver binary
-      env:
-        CGO_ENABLED: 0
-        GOOS: linux
-        GOARCH: arm64
-      run: |
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -a -o kuberay-apiserver-$GOARCH cmd/main.go
-      working-directory: ${{env.working-directory}}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build MultiArch Image
-      uses: docker/build-push-action@v5
-      env:
-        PUSH: true
-        ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
-        ECR_REPO: exa-hephaestus/kuberay-apiserver
-      with:
-        platforms: linux/amd64,linux/arm64
-        context: .
-        file: ./apiserver/Dockerfile.buildx
-        push: ${{env.PUSH}}
-        provenance: false
-        tags: |
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
+      - name: Build MultiArch Image
+        uses: docker/build-push-action@v5
+        env:
+          PUSH: true
+          ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
+          ECR_REPO: exa-hephaestus/kuberay-apiserver
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: .
+          file: ./apiserver/Dockerfile.buildx
+          push: ${{env.PUSH}}
+          provenance: false
+          tags: |
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
 
   release_operator_image:
     env:
@@ -105,108 +108,107 @@ jobs:
     name: Release Operator Docker Images
     runs-on: ubuntu-22.04
     steps:
+      - name: Error if not a tag
+        uses: actions/github-script@v7
+        if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
+        with:
+          script: core.setFailed('This action can only be run on tags')
 
-    - name: Error if not a tag
-      uses: actions/github-script@v7
-      if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
-      with:
-        script: core.setFailed('This action can only be run on tags')
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: v1.24
 
-    - name: Set up Go
-      uses: actions/setup-go@v3
-      with:
-        go-version: v1.24
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+      - name: Extract tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
-    - name: Extract tag
-      id: tag
-      run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      - name: Install kubebuilder
+        run: |
+          wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
+          sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
 
-    - name: Install kubebuilder
-      run: |
-        wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
-        sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
+      - name: Get revision SHA
+        id: vars
+        run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
 
-    - name: Get revision SHA
-      id: vars
-      run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+      - name: Get dependencies
+        run: go mod download
+        working-directory: ${{env.working-directory}}
 
-    - name: Get dependencies
-      run: go mod download
-      working-directory: ${{env.working-directory}}
+      - name: Build
+        run: make build
+        working-directory: ${{env.working-directory}}
 
-    - name: Build
-      run: make build
-      working-directory: ${{env.working-directory}}
+      - name: Test
+        run: make test
+        working-directory: ${{env.working-directory}}
 
-    - name: Test
-      run: make test
-      working-directory: ${{env.working-directory}}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
+          aws-region: us-west-2
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
-        aws-region: us-west-2
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
+      # Build operators inside the gh runner vm directly and then copy the go binaries to docker images using the Dockerfile.buildx
+      - name: Build linux/amd64 Operator go binary
+        env:
+          CGO_ENABLED: 1
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o manager-$GOARCH main.go
+        working-directory: ${{env.working-directory}}
 
-    # Build operators inside the gh runner vm directly and then copy the go binaries to docker images using the Dockerfile.buildx
-    - name: Build linux/amd64 Operator go binary
-      env:
-        CGO_ENABLED: 1
-        GOOS: linux
-        GOARCH: amd64
-      run: |
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o manager-$GOARCH main.go
-      working-directory: ${{env.working-directory}}
+      - name: Build linux/arm64 Operator binary
+        env:
+          CC: aarch64-linux-gnu-gcc
+          CGO_ENABLED: 1
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
+          CC=$CC CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o manager-$GOARCH main.go
+        working-directory: ${{env.working-directory}}
 
-    - name: Build linux/arm64 Operator binary
-      env:
-        CC: aarch64-linux-gnu-gcc
-        CGO_ENABLED: 1
-        GOOS: linux
-        GOARCH: arm64
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-aarch64-linux-gnu libc6-dev-arm64-cross
-        CC=$CC CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o manager-$GOARCH main.go
-      working-directory: ${{env.working-directory}}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      - name: Build MultiArch Image
+        uses: docker/build-push-action@v5
+        env:
+          PUSH: true
+          ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
+          ECR_REPO: exa-hephaestus/kuberay-operator
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: ${{env.working-directory}}
+          file: ${{env.working-directory}}/Dockerfile.buildx
+          push: ${{env.PUSH}}
+          provenance: false
+          tags: |
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
 
-    - name: Build MultiArch Image
-      uses: docker/build-push-action@v5
-      env:
-        PUSH: true
-        ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
-        ECR_REPO: exa-hephaestus/kuberay-operator
-      with:
-        platforms: linux/amd64,linux/arm64
-        context: ${{env.working-directory}}
-        file: ${{env.working-directory}}/Dockerfile.buildx
-        push: ${{env.PUSH}}
-        provenance: false
-        tags: |
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
-
-    - name: Create ray-operator tag
-      uses: actions/github-script@v6
-      with:
-        script: |
-          await github.rest.git.createRef({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            ref: 'refs/tags/ray-operator/${{ env.tag }}',
-            sha: '${{ github.sha }}'
-          })
+      - name: Create ray-operator tag
+        uses: actions/github-script@v6
+        with:
+          script: |
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'refs/tags/ray-operator/${{ env.tag }}',
+              sha: '${{ github.sha }}'
+            })
 
   release_dashboard_image:
     env:
@@ -214,50 +216,49 @@ jobs:
     name: Release Dashboard Docker Image
     runs-on: ubuntu-22.04
     steps:
+      - name: Error if not a tag
+        uses: actions/github-script@v7
+        if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
+        with:
+          script: core.setFailed('This action can only be run on tags')
 
-    - name: Error if not a tag
-      uses: actions/github-script@v7
-      if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
-      with:
-        script: core.setFailed('This action can only be run on tags')
+      - name: Check out code into dashboard directory
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
-    - name: Check out code into dashboard directory
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+      - name: Extract tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
-    - name: Extract tag
-      id: tag
-      run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      - name: Get revision SHA
+        id: vars
+        run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
 
-    - name: Get revision SHA
-      id: vars
-      run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
+          aws-region: us-west-2
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
-        aws-region: us-west-2
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
-
-    - name: Build and push Dashboard image
-      uses: docker/build-push-action@v4
-      env:
-        ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
-        ECR_REPO: exa-hephaestus/kuberay-dashboard
-      with:
-        context: ${{ env.working-directory }}
-        file: ${{ env.working-directory }}/Dockerfile
-        push: true
-        tags: |
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
-        labels: |
-          GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
-        provenance: false
+      - name: Build and push Dashboard image
+        uses: docker/build-push-action@v4
+        env:
+          ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
+          ECR_REPO: exa-hephaestus/kuberay-dashboard
+        with:
+          context: ${{ env.working-directory }}
+          file: ${{ env.working-directory }}/Dockerfile
+          push: true
+          tags: |
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
+          labels: |
+            GIT_COMMIT=${{ steps.vars.outputs.sha_short }}
+          provenance: false
 
   release_submitter_image:
     env:
@@ -265,77 +266,76 @@ jobs:
     name: Release Submitter Docker Images
     runs-on: ubuntu-22.04
     steps:
+      - name: Error if not a tag
+        uses: actions/github-script@v7
+        if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
+        with:
+          script: core.setFailed('This action can only be run on tags')
 
-    - name: Error if not a tag
-      uses: actions/github-script@v7
-      if: ${{ ! startsWith(github.ref, 'refs/tags/') }}
-      with:
-        script: core.setFailed('This action can only be run on tags')
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: v1.24
 
-    - name: Set up Go
-      uses: actions/setup-go@v3
-      with:
-        go-version: v1.24
+      - name: Check out code into the Go module directory
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
 
-    - name: Check out code into the Go module directory
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
+      - name: Extract tag
+        id: tag
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
 
-    - name: Extract tag
-      id: tag
-      run: echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_ENV
+      - name: Get revision SHA
+        id: vars
+        run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
 
-    - name: Get revision SHA
-      id: vars
-      run: echo "::set-output name=sha_short::$(git rev-parse --short HEAD)"
+      - name: Get dependencies
+        run: go mod download
+        working-directory: ${{env.working-directory}}
 
-    - name: Get dependencies
-      run: go mod download
-      working-directory: ${{env.working-directory}}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
+          aws-region: us-west-2
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: arn:aws:iam::472386928882:role/github-actions-role
-        aws-region: us-west-2
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
+      - name: Build linux/amd64 submitter go binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: amd64
+        run: |
+          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o submitter-$GOARCH ./rayjob-submitter/cmd/main.go
+        working-directory: ${{env.working-directory}}
 
-    - name: Build linux/amd64 submitter go binary
-      env:
-        CGO_ENABLED: 0
-        GOOS: linux
-        GOARCH: amd64
-      run: |
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o submitter-$GOARCH ./rayjob-submitter/cmd/main.go
-      working-directory: ${{env.working-directory}}
+      - name: Build linux/arm64 submitter binary
+        env:
+          CGO_ENABLED: 0
+          GOOS: linux
+          GOARCH: arm64
+        run: |
+          CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o submitter-$GOARCH ./rayjob-submitter/cmd/main.go
+        working-directory: ${{env.working-directory}}
 
-    - name: Build linux/arm64 submitter binary
-      env:
-        CGO_ENABLED: 0
-        GOOS: linux
-        GOARCH: arm64
-      run: |
-        CGO_ENABLED=$CGO_ENABLED GOOS=$GOOS GOARCH=$GOARCH go build -tags strictfipsruntime -a -o submitter-$GOARCH ./rayjob-submitter/cmd/main.go
-      working-directory: ${{env.working-directory}}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
-    - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
-
-    - name: Build MultiArch Image
-      uses: docker/build-push-action@v5
-      env:
-        PUSH: true
-        ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
-        ECR_REPO: exa-hephaestus/kuberay-submitter
-      with:
-        platforms: linux/amd64,linux/arm64
-        context: ${{env.working-directory}}
-        file: ${{env.working-directory}}/Dockerfile.submitter.buildx
-        push: ${{env.PUSH}}
-        provenance: false
-        tags: |
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
-          ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
+      - name: Build MultiArch Image
+        uses: docker/build-push-action@v5
+        env:
+          PUSH: true
+          ECR_REGISTRY: 472386928882.dkr.ecr.us-west-2.amazonaws.com
+          ECR_REPO: exa-hephaestus/kuberay-submitter
+        with:
+          platforms: linux/amd64,linux/arm64
+          context: ${{env.working-directory}}
+          file: ${{env.working-directory}}/Dockerfile.submitter.buildx
+          push: ${{env.PUSH}}
+          provenance: false
+          tags: |
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ steps.vars.outputs.sha_short }}
+            ${{env.ECR_REGISTRY}}/${{env.ECR_REPO}}:${{ env.tag }}
