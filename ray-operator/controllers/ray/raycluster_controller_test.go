@@ -25,6 +25,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	monitoringv1 "github.com/prometheus-operator/prometheus-operator/pkg/apis/monitoring/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -1484,6 +1485,81 @@ var _ = Context("Inside the default namespace", func() {
 			Eventually(
 				getResourceFunc(ctx, client.ObjectKey{Name: rayCluster.Name + "-headless", Namespace: namespace}, &svc),
 				time.Second*3, time.Millisecond*500).Should(Succeed())
+		})
+	})
+
+	Describe("PodMonitor creation and cleanup", Ordered, func() {
+		ctx := context.Background()
+		namespace := "default"
+		rayCluster := rayClusterTemplate("raycluster-podmonitor-test", namespace)
+
+		It("Create a RayCluster custom resource", func() {
+			err := k8sClient.Create(ctx, rayCluster)
+			Expect(err).NotTo(HaveOccurred(), "Failed to create RayCluster")
+			Eventually(
+				getResourceFunc(ctx, client.ObjectKey{Name: rayCluster.Name, Namespace: namespace}, rayCluster),
+				time.Second*3, time.Millisecond*500).Should(Succeed(), "Should be able to see RayCluster: %v", rayCluster.Name)
+		})
+
+		It("Should create PodMonitors for head and worker nodes", func() {
+			// Check that head PodMonitor is created
+			headPodMonitor := &monitoringv1.PodMonitor{}
+			headPodMonitorName := rayCluster.Name + "-head-monitor"
+			Eventually(
+				getResourceFunc(ctx, client.ObjectKey{Name: headPodMonitorName, Namespace: namespace}, headPodMonitor),
+				time.Second*3, time.Millisecond*500).Should(Succeed(), "Head PodMonitor should be created")
+
+			Expect(headPodMonitor.Labels[utils.RayClusterLabelKey]).To(Equal(rayCluster.Name))
+			Expect(headPodMonitor.Labels[utils.RayNodeTypeLabelKey]).To(Equal(string(rayv1.HeadNode)))
+
+			Expect(headPodMonitor.Spec.PodMetricsEndpoints).To(HaveLen(3))
+			endpointPorts := []string{}
+			for _, endpoint := range headPodMonitor.Spec.PodMetricsEndpoints {
+				endpointPorts = append(endpointPorts, *endpoint.Port)
+			}
+			Expect(endpointPorts).To(ContainElements("metrics", "as-metrics", "dash-metrics"))
+
+			// Check that worker PodMonitor is created
+			workerPodMonitor := &monitoringv1.PodMonitor{}
+			workerPodMonitorName := rayCluster.Name + "-worker-monitor"
+			Eventually(
+				getResourceFunc(ctx, client.ObjectKey{Name: workerPodMonitorName, Namespace: namespace}, workerPodMonitor),
+				time.Second*3, time.Millisecond*500).Should(Succeed(), "Worker PodMonitor should be created")
+
+			Expect(workerPodMonitor.Labels[utils.RayClusterLabelKey]).To(Equal(rayCluster.Name))
+			Expect(workerPodMonitor.Labels[utils.RayNodeTypeLabelKey]).To(Equal(string(rayv1.WorkerNode)))
+
+			Expect(workerPodMonitor.Spec.PodMetricsEndpoints).To(HaveLen(1))
+			Expect(*workerPodMonitor.Spec.PodMetricsEndpoints[0].Port).To(Equal("metrics"))
+		})
+
+		It("PodMonitors should have owner references pointing to RayCluster", func() {
+			// Check head PodMonitor owner reference
+			headPodMonitor := &monitoringv1.PodMonitor{}
+			headPodMonitorName := rayCluster.Name + "-head-monitor"
+			err := k8sClient.Get(ctx, client.ObjectKey{Name: headPodMonitorName, Namespace: namespace}, headPodMonitor)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(headPodMonitor.OwnerReferences).To(HaveLen(1))
+			Expect(headPodMonitor.OwnerReferences[0].Kind).To(Equal("RayCluster"))
+			Expect(headPodMonitor.OwnerReferences[0].Name).To(Equal(rayCluster.Name))
+			Expect(headPodMonitor.OwnerReferences[0].UID).To(Equal(rayCluster.UID))
+			Expect(*headPodMonitor.OwnerReferences[0].Controller).To(BeTrue())
+
+			workerPodMonitor := &monitoringv1.PodMonitor{}
+			workerPodMonitorName := rayCluster.Name + "-worker-monitor"
+			err = k8sClient.Get(ctx, client.ObjectKey{Name: workerPodMonitorName, Namespace: namespace}, workerPodMonitor)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(workerPodMonitor.OwnerReferences).To(HaveLen(1))
+			Expect(workerPodMonitor.OwnerReferences[0].Kind).To(Equal("RayCluster"))
+			Expect(workerPodMonitor.OwnerReferences[0].Name).To(Equal(rayCluster.Name))
+			Expect(workerPodMonitor.OwnerReferences[0].UID).To(Equal(rayCluster.UID))
+			Expect(*workerPodMonitor.OwnerReferences[0].Controller).To(BeTrue())
+		})
+
+		It("PodMonitors should be deleted when RayCluster is deleted", func() {
+			Skip("Skipping deletion test: envtest does not run the Kubernetes garbage collector, so ownerReference-based cascading deletion is not tested here. In a real cluster, PodMonitors will be automatically deleted via garbage collection when the RayCluster is deleted.")
 		})
 	})
 })
