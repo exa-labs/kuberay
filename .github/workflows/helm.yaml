@@ -57,7 +57,21 @@ jobs:
           python-version: 3.13
 
       - name: Install Helm unittest plugin
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest.git --version 0.8.1
+        run: |
+          # Retry to tolerate transient github.com release-download failures
+          # (the plugin's install-binary.sh fetches the binary + checksum from
+          # the v0.8.1 release page; if either request 5xx's, the install hook
+          # fails with "no properly formatted SHA checksum lines found").
+          for attempt in 1 2 3 4 5; do
+            helm plugin uninstall unittest >/dev/null 2>&1 || true
+            if helm plugin install https://github.com/helm-unittest/helm-unittest.git --version 0.8.1; then
+              exit 0
+            fi
+            echo "helm plugin install attempt $attempt failed; retrying in 10s..."
+            sleep 10
+          done
+          echo "helm plugin install failed after 5 attempts" >&2
+          exit 1
 
       - name: Run Helm unittest
         run: helm unittest ${{ env.CHART_DIR }}/${{ matrix.chart }} --file "tests/**/*_test.yaml" --strict --debug

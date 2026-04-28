@@ -61,7 +61,7 @@ jobs:
 
       - name: install kubebuilder
         run: |
-          wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
+          wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
           sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
 
       - name: Get revision SHA
@@ -196,7 +196,7 @@ jobs:
 
       - name: install kubebuilder
         run: |
-          wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
+          wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
           sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
 
       - name: Get revision SHA
@@ -300,7 +300,7 @@ jobs:
 
       - name: install kubebuilder
         run: |
-          wget https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
+          wget --tries=5 --waitretry=10 --retry-on-http-error=429,500,502,503,504 https://github.com/kubernetes-sigs/kubebuilder/releases/download/v3.0.0/kubebuilder_$(go env GOOS)_$(go env GOARCH)
           sudo mv kubebuilder_$(go env GOOS)_$(go env GOARCH) /usr/local/bin/kubebuilder
 
       - name: Get revision SHA
