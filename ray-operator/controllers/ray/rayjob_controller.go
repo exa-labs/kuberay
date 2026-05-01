@@ -1131,20 +1131,28 @@ func checkSubmitterFinishedTimeoutAndUpdateStatusIfNeeded(ctx context.Context, r
 		return false
 	}
 
+	// Read the grace period from the env var, falling back to the hardcoded default.
+	// This reuses the same env var as checkTransitionGracePeriodAndUpdateStatusIfNeeded
+	// so operators only need to configure one knob.
+	submitterTimeout := DefaultSubmitterFinishedTimeout
+	if gracePeriodSeconds, err := strconv.Atoi(os.Getenv(utils.RAYJOB_DEPLOYMENT_STATUS_TRANSITION_GRACE_PERIOD_SECONDS)); err == nil && gracePeriodSeconds > 0 {
+		submitterTimeout = time.Duration(gracePeriodSeconds) * time.Second
+	}
+
 	// Check if timeout has been exceeded
-	if time.Now().Before(finishedAt.Add(DefaultSubmitterFinishedTimeout)) {
+	if time.Now().Before(finishedAt.Add(submitterTimeout)) {
 		return false
 	}
 
 	logger.Info("The RayJob has passed the submitterFinishedTimeoutSeconds. Transition the status to terminal.",
 		"SubmitterFinishedTime", finishedAt,
-		"SubmitterFinishedTimeoutSeconds", DefaultSubmitterFinishedTimeout.String())
+		"SubmitterFinishedTimeoutSeconds", submitterTimeout.String())
 
 	rayJob.Status.JobStatus = rayv1.JobStatusFailed
 	rayJob.Status.JobDeploymentStatus = rayv1.JobDeploymentStatusFailed
 	rayJob.Status.Reason = rayv1.JobDeploymentStatusTransitionGracePeriodExceeded
 	rayJob.Status.Message = fmt.Sprintf("The RayJob submitter finished at %v but the ray job did not reach terminal state within %v",
-		finishedAt.Format(time.DateTime), DefaultSubmitterFinishedTimeout)
+		finishedAt.Format(time.DateTime), submitterTimeout)
 	return true
 }
 
